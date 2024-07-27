@@ -2,3 +2,13 @@
 *.env
 
 .venv
+
+
+# Ignore all __pycache__ directories
+__pycache__/
+
+# Other rules
+*.pyc
+*.pyo
+*.pyd
+.DS_Store
