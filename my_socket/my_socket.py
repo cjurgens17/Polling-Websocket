@@ -34,10 +34,7 @@ class ClientSession():
 
 #Sending an error back to the client
 async def error(websocket, message):
-    error_message = {
-        "type": "error",
-        "message": message,
-    }
+    error_message = {"type": "error", "message": message}
     await websocket.send(json.dumps(error_message))
 
 #Helper for send
@@ -60,56 +57,53 @@ async def handler(websocket):
 
     client = ClientSession(websocket)
 
-    if client not in CLIENTS:
+    try:
         CLIENTS.add(client)
 
-    try:
-        while True:
-            async for message in client.websocket:
-                message = await client.websocket.recv()
+        async for message in websocket:
+            try:
+                print("raw message",message)
                 data = json.loads(message)
-
-                #admin_client or client
-                match(data['is_admin']):
-                    case True:
-                        match(data['type']):
-                            case "reset_vote":
-                                reset_all_client_vote(client)
-                                break
-                            case "update_curr_question":
-                                update_question(message,client)
-                                break
-                            case "next_question_reset":
-                                next_question_reset()
-                                break
-                            case "no_vote_allowed":
-                                no_vote_allowed(client)
-                                break
-                            case "vote_allowed":
-                                vote_allowed(client)
-                                break
-                            case "replay":
-                                replay(client)
-                                break
-                            case _:
-                                break
-                    case False:
-                        match(data['type']):
-                            case "vote":
-                                client_vote(message,client)
-                                break
-                            case _:
-                                break
-                    case _:
-                        break
+                print("json message", message)
                 
+                if data['is_admin']:
+                    await handle_admin_message(data, client)
+                else:
+                    await handle_client_message(data, client)
+            except json.JSONDecodeError:
+                print(f"Invalid JSON received: {message}")
+
     except websockets.exceptions.ConnectionClosed:
-        error(client.websocket, "Something went wrong, contact your administrator")
-    
+        print(f"Connection closed for client: {client}")
+    finally:
+        CLIENTS.remove(client)
+
+async def handle_admin_message(data,client):
+    match data['type']:
+        case "reset_vote":
+            await reset_all_client_vote(client)
+        case "update_curr_question":
+            await update_question(data, client)
+        case "next_question_reset":
+            await next_question_reset()
+        case "no_vote_allowed":
+            await no_vote_allowed(client)
+        case "vote_allowed":
+            await vote_allowed(client)
+        case "replay":
+            await replay(client)
+        case _:
+            print(f"Unknown admin message type: {data['type']}")
+
+async def handle_client_message(data,client):
+    match data['type']:
+        case "vote":
+            await client_vote(data, client)
+        case _:
+            print(f"Unknown client message type: {data['type']}")
+
 async def reset_all_client_vote():
-    message = {
-        "voted" : False
-    }
+    message = { "voted" : False}
     await broadcast(message)
 
 async def next_question_reset(client):
@@ -140,9 +134,8 @@ async def vote_allowed(client):
 
 
 async def client_vote(message,client):
-    vote_message = json.loads(message)
-    vote_decision = vote_message['vote_decision']
-    vote_weight = vote_message['vote_weight']
+    vote_decision = message['vote_decision']
+    vote_weight = message['vote_weight']
 
     OFFICIAL_GAME_STATE.vote_tally[vote_decision] += vote_weight
 
@@ -151,9 +144,9 @@ async def client_vote(message,client):
     await client.websocket.send(json.dumps(voted))
 
 async def update_question(message,client):
-    update_question_message = json.loads(message)
+    question = message['update_question']
 
-    OFFICIAL_GAME_STATE.curr_question = update_question_message['update_question']
+    OFFICIAL_GAME_STATE.curr_question = question
 
     curr_question_message = {"curr_question" : OFFICIAL_GAME_STATE.curr_question}
 
@@ -162,83 +155,10 @@ async def update_question(message,client):
 #Client joins -> update them with the latest state -> need to grab some incoming id to replay back to specific client
 async def replay(client):
     await client.websocket.send(json.dumps(OFFICIAL_GAME_STATE))
-
-#Re-write
-async def update_global_question_score(websocket, poll_hub,attendee):
-    """
-    Receive and process score in generic_poll_state.
-
-    """
-    async for message in websocket:
-        """"
-    poll_decision obj = {
-        did_vote: bool,
-        weighted_score: int,
-        attendee: string
-        decision: string
-    }
-    """
-        generic_poll_state = {}
-        #No more polling allowed at this moment
-        if not generic_poll_state["polling_allowed"]:
-            return
-        #receive incoming message from attendee
-        poll_decision = json.loads(message)
-
-        decision = poll_decision['decision']
-        weighted_score = poll_decision['weighted_score']
-        attendee = poll_decision['attendee']
         
-        #Check user hasn't voted yet -> check user is an attendee
-        assert decision == False
-        assert attendee in generic_poll_state["attendees"]
-
-        try:
-            #Update the current global_question_score in generic_poll_state + mark the attendee as voted
-            if decision.lower() == 'yes':
-                new_score = generic_poll_state['global_question_score'] + weighted_score 
-                generic_poll_state['global_question_score'] = new_score
-            poll_decision["did_vote"] = True
-        except RuntimeError as e:
-            # Send an "error" event if the move was illegal.
-            await error(websocket, str(e))
-            continue
-
-        # Send state back to Main UI + Send state back to attendee client
-        await websockets.broadcast(poll_hub, json.dumps(OFFICIAL_GAME_STATE))
-        await websockets.broadcast(attendee, json.dump(poll_decision))
-
-#Re-write for Auth
-async def generate_join_key(websocket):
-    #Route to hit to send the client a join key for auth
-    
-        #start the socket and turn state to true
-        join_key = secrets.token_urlsafe(12)
-        # JOIN_KEYS.append(join_key)
-        await websocket.send(json.dumps({"secret" : join_key}))
-        
-#Re-Write
-async def join(websocket):
-    """
-    Implement for attendees to join
-    Multiple joins at the same time -> we await for each message hitting this route
-    """
-    generic_poll_state = {}
-    async for message in websocket:
-        message = json.loads(message)
-        print("Client Message", message)
-        if message['secret'] == os.getenv('SECRET_KEY'):
-             generic_poll_state['attendees'].append(message['attendee'])
-        generic_poll_event = {
-            "type": "joined",
-            "message": "You have successfully joined the game"
-        }
-        await websocket.send(json.dumps(generic_poll_event))
-
 async def main():
-    async with websockets.serve(handler, "", 8001):
-        await asyncio.Future()  # run forever
-
+    server = await websockets.serve(handler, "localhost", 8001)
+    await server.wait_closed()
 
 if __name__ == "__main__":
     asyncio.run(main())
