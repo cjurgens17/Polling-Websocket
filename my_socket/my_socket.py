@@ -12,6 +12,8 @@ CLIENTS = set()
 #Think about making Question class -> Having (x) Data Structure of Questions in GameState -> Allow ability to revote and change 
 #questions with ease
 
+#Think about distributed constant that will control client voteablilty which comes from Admin
+
 #Think about saving results for all question in a list as well to keep record
 class GameState():
     #Class Vars
@@ -20,10 +22,18 @@ class GameState():
         "no": 0
     }
 
-    def __init__(self,curr_question="",game_started=False,voting_allowed=False):
+    def __init__(self,curr_question="Get Ready To Vote!",game_started=False,voting_allowed=False):
         self.curr_question = curr_question
         self.game_started = game_started
         self.voting_allowed = voting_allowed
+
+    def to_json(self):
+        return {
+            "curr_question" : self.curr_question,
+            "game_started" : self.game_started,
+            "voting_allowed" : self.voting_allowed,
+            "vote_tally" : self.vote_tally
+        }
 
 OFFICIAL_GAME_STATE = GameState()
 
@@ -62,9 +72,7 @@ async def handler(websocket):
 
         async for message in websocket:
             try:
-                print("raw message",message)
                 data = json.loads(message)
-                print("json message", message)
                 
                 if data['is_admin']:
                     await handle_admin_message(data, client)
@@ -99,6 +107,8 @@ async def handle_client_message(data,client):
     match data['type']:
         case "vote":
             await client_vote(data, client)
+        case "replay":
+            await replay(client)
         case _:
             print(f"Unknown client message type: {data['type']}")
 
@@ -121,14 +131,14 @@ async def next_question_reset(client):
 async def no_vote_allowed(client):
     OFFICIAL_GAME_STATE.voting_allowed = False
 
-    no_vote_allowed = {"vote_allowed" : False}
+    no_vote_allowed = {"type": "vote_allowed","vote_allowed" : False,"curr_question" : OFFICIAL_GAME_STATE.curr_question}
 
     await client.websocket.send(json.dumps(no_vote_allowed))
 
 async def vote_allowed(client):
     OFFICIAL_GAME_STATE.voting_allowed = True
 
-    vote_allowed = {"vote_allowed" : True}
+    vote_allowed = {"type":"vote_allowed","vote_allowed" : True, "curr_question" : OFFICIAL_GAME_STATE.curr_question}
 
     await client.websocket.send(json.dumps(vote_allowed))
 
@@ -154,7 +164,8 @@ async def update_question(message,client):
 
 #Client joins -> update them with the latest state -> need to grab some incoming id to replay back to specific client
 async def replay(client):
-    await client.websocket.send(json.dumps(OFFICIAL_GAME_STATE))
+    replay = {"type" : "official", "game_state" : OFFICIAL_GAME_STATE.to_json()}
+    await client.websocket.send(json.dumps(replay))
         
 async def main():
     server = await websockets.serve(handler, "localhost", 8001)
